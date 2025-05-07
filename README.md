@@ -1,4 +1,4 @@
-# emsar69/mnist_ai
+# emsar69/MNIST-AI-Without-External-Libraries
 
 Artifical Intelligence number recognization by images &mdash; using no AI libraries
 
