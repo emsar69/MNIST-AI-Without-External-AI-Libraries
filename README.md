@@ -39,7 +39,7 @@ cmake -G "Unix Makefiles" ..
 ```
 
 ### Example output
-Example neural network trained with 30k diffirent image/label pairs output:
+Example neural network trained with 30k different image/label pairs output:
 
 ```log
 > .\MNIST_AI.exe
