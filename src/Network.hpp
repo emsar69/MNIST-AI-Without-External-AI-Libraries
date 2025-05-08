@@ -6,16 +6,17 @@
 class Neuron
 {
 public:
-    double bias;
-    nc::NdArray<double> weights;
+    double bias, b_grad; // For Mini-Batch
+    nc::NdArray<double> weights, w_grad; // For Mini-Batch
     double output;
-    double delta;
 
     Neuron(nc::uint32 input_size)
     {
         double stddev = std::sqrt(2.0 / input_size);
         weights = stddev * nc::random::randN<double>({1, input_size});
         bias = stddev * nc::random::randN<double>();
+
+        w_grad = nc::zeros<double>(weights.shape());
     }
 
     double Activate(const nc::NdArray<double> &inputs)
@@ -95,7 +96,7 @@ public:
         layers = hiddenlayers;
     }
 
-    void Train(std::vector<nc::NdArray<double>> inputs, std::vector<nc::NdArray<double>> targets, int epoch = 10, double learning_rate = 0.01, double cross_validate = 0)
+    void Train(std::vector<nc::NdArray<double>> inputs, std::vector<nc::NdArray<double>> targets, int epoch = 10, double learning_rate = 0.01, double cross_validate = 0, int batch_size = 32)
     {
         if (inputs.size() != targets.size())
             throw std::runtime_error("Datasets must have same length!");
@@ -114,61 +115,81 @@ public:
             double train_accuracy = 0;
             double total_loss = 0;
             double test_accuracy = 0;
-            for (int i = 0; i < inputs.size(); i++)
-            {
-                nc::NdArray<double> predicted = Predict(inputs[i]);
 
-                if (predicted.argmax()[0] == targets[i].argmax()[0])
-                    train_accuracy++;
+            for(int b = 0; b < inputs.size(); b += batch_size){
+                int clamped_batch = std::min(batch_size, (int)inputs.size() - b);
 
-                double loss = cross_entropy(predicted, targets[i]); // Changed from MSE to CE
-                total_loss += loss;
+                for(int i = b; i < b + clamped_batch; i++){
+                    nc::NdArray<double> predicted = Predict(inputs[i]);
 
-                nc::NdArray<double> dl_da = predicted - targets[i]; // ∂L/∂A | the rate of change in L by A (activation)
+                    if (predicted.argmax()[0] == targets[i].argmax()[0])
+                        train_accuracy++;
 
-                // OUTPUT LAYER (cuz its different from other layers. They dont have loss thingy)
-                Layer &output_layer = layers.back();
-                if (output_layer.activationFunctionEnum == ActivationFunction::mSoftmax)
-                {                                // Further optimization is possible
-                    output_layer.deltas = dl_da; // predicted - targets will be equal to ∂L/∂z which means delta, not the ∂L/∂A
-                }
-                else
-                {
-                    for (int j = 0; j < output_layer.neurons.size(); j++)
+                    double loss = cross_entropy(predicted, targets[i]); // Changed from MSE to CE
+                    total_loss += loss;
+
+                    nc::NdArray<double> dl_da = predicted - targets[i]; // ∂L/∂A | the rate of change in L by A (activation)
+
+                    // OUTPUT LAYER (cuz its different from other layers. They dont have loss thingy)
+                    Layer &output_layer = layers.back();
+                    if (output_layer.activationFunctionEnum == ActivationFunction::mSoftmax)
+                    {                                // Further optimization is possible
+                        output_layer.deltas = dl_da; // predicted - targets will be equal to ∂L/∂z which means delta, not the ∂L/∂A
+                    }
+                    else
                     {
-                        output_layer.deltas(0, j) = dl_da(0, j) * output_layer.activation_derivative.scalar(output_layer.outputs(0, j)); // j th delta = dL/da * da/dz = dL/dz
+                        for (int j = 0; j < output_layer.neurons.size(); j++)
+                        {
+                            output_layer.deltas(0, j) = dl_da(0, j) * output_layer.activation_derivative.scalar(output_layer.outputs(0, j)); // j th delta = dL/da * da/dz = dL/dz
+                        }
+                    }
+
+                    for (int j = layers.size() - 2; j >= 0; j--)
+                    {
+                        Layer &current = layers[j];
+                        Layer &next = layers[j + 1];
+                        for (int k = 0; k < current.neurons.size(); k++)
+                        {
+                            double sum = 0;
+                            for (int l = 0; l < next.neurons.size(); l++)
+                            {
+                                sum += next.neurons[l].weights(0, k) * next.deltas(0, l);
+                            }
+                            current.deltas(0, k) = sum * current.activation_derivative.scalar(current.neurons[k].output);
+                        }
+                    }
+
+                    // real learning process (Save to gradients)
+                    for (int l = 0; l < layers.size(); l++)
+                    {
+                        auto prev = l == 0 ? inputs[i] : layers[l - 1].outputs;
+                        for (int j = 0; j < layers[l].neurons.size(); j++)
+                        {
+                            layers[l].neurons[j].w_grad += layers[l].deltas(0, j) * prev;
+                            /*for (int k = 0; k < layers[l].neurons[j].weights.shape().cols; k++)
+                            {
+                                layers[l].neurons[j].weights(0, k) -= learning_rate * layers[l].deltas(0, j) * prev(0, k);
+                            }*/
+                            layers[l].neurons[j].b_grad += layers[l].deltas(0, j);
+                            //layers[l].neurons[j].bias -= learning_rate * layers[l].deltas(0, j);
+                        }
                     }
                 }
 
-                for (int j = layers.size() - 2; j >= 0; j--)
-                {
-                    Layer &current = layers[j];
-                    Layer &next = layers[j + 1];
-                    for (int k = 0; k < current.neurons.size(); k++)
-                    {
-                        double sum = 0;
-                        for (int l = 0; l < next.neurons.size(); l++)
-                        {
-                            sum += next.neurons[l].weights(0, k) * next.deltas(0, l);
-                        }
-                        /*current.neurons[k].delta*/ current.deltas(0, k) = sum * current.activation_derivative.scalar(current.neurons[k].output);
-                    }
-                }
+                // Updating weight and biases using stored gradients
 
-                // real learning process
-                for (int l = 0; l < layers.size(); l++)
-                {
-                    auto prev = l == 0 ? inputs[i] : layers[l - 1].outputs;
-                    for (int j = 0; j < layers[l].neurons.size(); j++)
-                    {
-                        for (int k = 0; k < layers[l].neurons[j].weights.shape().cols; k++)
-                        {
-                            layers[l].neurons[j].weights(0, k) -= learning_rate * layers[l].deltas(0, j) * prev(0, k);
-                        }
-                        layers[l].neurons[j].bias -= learning_rate * layers[l].deltas(0, j);
+                for(auto& layer : layers){
+                    for(auto& neuron : layer.neurons){
+                        neuron.weights -= neuron.w_grad * (learning_rate / batch_size); // Same thing with: learning_rate * (neuron.w_grad / batch_size) [a*(b/c) == b*(a/c)]
+                        neuron.bias -= learning_rate * (neuron.b_grad / batch_size);
+
+                        // Reset gradients
+                        neuron.w_grad.fill(0.0f);
+                        neuron.b_grad = 0;
                     }
                 }
             }
+            
             for (int i = 0; i < test_input.size(); i++)
             {
                 nc::NdArray<double> predicted = Predict(test_input[i]);
