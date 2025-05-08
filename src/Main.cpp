@@ -21,7 +21,7 @@ int main(){
 
     Logger::log("Training.");
 
-    nn.Train(inputs, targets, 5, 0.01, 0.05); // TODO: increase the generalization.
+    nn.Train(inputs, targets, 10, 0.03, 0.05); // TODO: increase the generalization.
 
     for(;;){
         std::string input;
